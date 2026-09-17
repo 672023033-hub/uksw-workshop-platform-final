@@ -1,0 +1,147 @@
+version: '3.8'
+
+# Production-lite deployment for a 1 GB VPS.
+# Kafka is managed by Aiven; Zookeeper/Kafka/Jaeger/ngrok are intentionally removed.
+
+networks:
+  sia-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: sia-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: Asia/Jakarta
+      PGTZ: Asia/Jakarta
+    command: postgres -c timezone=Asia/Jakarta -c shared_buffers=64MB -c max_connections=30
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - sia-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.35'
+          memory: 320M
+
+  flyway:
+    image: flyway/flyway:10-alpine
+    container_name: sia-flyway
+    command: >-
+      -url=jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      -user=${POSTGRES_USER}
+      -password=${POSTGRES_PASSWORD}
+      -connectRetries=60 migrate
+    environment:
+      TZ: Asia/Jakarta
+    volumes:
+      - ./db/migration:/flyway/sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - sia-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: sia-redis
+    restart: unless-stopped
+    command: >-
+      redis-server --maxmemory 96mb --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      - sia-network
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.20'
+          memory: 128M
+
+  backend-service:
+    build:
+      context: ./backend/backend-service
+      dockerfile: Dockerfile
+    container_name: sia-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
+    environment:
+      PORT: 8080
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      KAFKA_TLS: "true"
+      KAFKA_CA_FILE: /run/secrets/kafka_ca.pem
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD}
+      KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM:-SCRAM-SHA-512}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      TZ: Asia/Jakarta
+      OTEL_TRACES_EXPORTER: none
+    volumes:
+      - ./secrets/ca.pem:/run/secrets/kafka_ca.pem:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - sia-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.40'
+          memory: 220M
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_WS_BASE_URL: /ws
+    container_name: sia-frontend
+    restart: unless-stopped
+    depends_on:
+      backend-service:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    networks:
+      - sia-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.20'
+          memory: 64M

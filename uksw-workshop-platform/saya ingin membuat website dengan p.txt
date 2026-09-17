@@ -1,0 +1,50 @@
+saya ingin membuat website dengan proses bisnis sebagai berikut.
+1. Dua jenis login
+2. Mahasiswa login menggunakan nama dan NIM.
+3. Admin/instruktur login menggunakan nama instruktur dan password.
+4. Keduanya memiliki tombol logout.
+
+Untuk Dashboard mahasiswa
+1. Menampilkan daftar alat seperti multimeter, toolkit, 3D printer, osiloskop, soldering station, power supply, dan Arduino kit.
+2. Mahasiswa dapat memilih alat dengan checklist.
+3. Mahasiswa dapat menentukan jumlah alat yang ingin dipinjam.
+4. Jumlah pinjaman tidak boleh melebihi stok tersedia.
+5. Alat maintenance atau habis tidak dapat dipilih.
+6. Barcode peminjaman
+Setelah memilih alat, mahasiswa dapat menekan tombol Generate Barcode Peminjaman. Barcode berisi nama, NIM, ID transaksi, daftar alat, jumlah alat, dan tanggal peminjaman. Disini Barcode tersebut dipindai oleh admin untuk mengonfirmasi peminjaman.
+
+Proses peminjaman oleh admin
+1. Admin memiliki menu Scan Barcode.
+2. Setelah barcode peminjaman dipindai dan dikonfirmasi, data masuk ke halaman Borrowing.
+3. Status berubah menjadi dipinjam.
+4. Stok atau quantity alat otomatis berkurang.
+5. Data peminjaman muncul pada history mahasiswa.
+6. Halaman peminjaman aktif mahasiswa
+7. Menampilkan alat yang sedang dipinjam.
+8. Berisi ID transaksi, nama alat, jumlah, tanggal pinjam, batas pengembalian, dan status.
+9. Mahasiswa memiliki tombol Pengembalian Alat.
+10.Barcode pengembalian, Pengembalian tidak dilakukan melalui tombol manual di halaman admin. Namun Mahasiswa menekan tombol Pengembalian Alat untuk membuat barcode pengembalian. Lalu Barcode pengembalian dipindai oleh admin.
+11. Setelah dikonfirmasi, stok alat otomatis bertambah.
+12. Data hilang dari daftar Borrowing aktif.
+13. Data tetap tersimpan di halaman Riwayat.
+14. Status berubah menjadi Returned.
+15. Tanggal pengembalian tercatat.
+16. Barcode tidak dapat digunakan kembali.
+
+Dashboard dan fitur admin
+1. Menu Dashboard, Inventory, Tambah Alat, Edit Alat, Borrowing, Scan Barcode, Riwayat, Notifikasi, dan Logout.
+2. Admin dapat menambah, mengedit, dan menghapus alat.
+3. Admin dapat mengatur nama alat, kode, kategori, jumlah, status, kondisi, lokasi, tanggal pemeriksaan, deskripsi, dan foto.
+
+Tampilan Inventory
+
+Mengikuti desain referensi yang kamu lampirkan.
+Urutan tabel:
+
+Equipment Name | Category | Quantity | Status | Last Checked | Actions
+
+Pada Kolom Quantity/Jumlah Alat harus diletakkan setelah Category. Tambahkan pencarian, filter, sorting, pagination, notifikasi, validasi, dan dialog konfirmasi.
+
+Jadi alur utamanya adalah: mahasiswa memilih alat → membuat barcode peminjaman → admin memindai dan mengonfirmasi → stok berkurang → mahasiswa membuat barcode pengembalian → admin memindai → stok bertambah dan transaksi masuk riwayat.
+
+Dengan mock up seperti yang saya lampirkan dalam bentuk zip, namun saya bingung harus membuat menggunakan bahasa pemograman apa saya hanya memiliki waktu kurang lebih 2 hari untuk membuat project tersebut hingga dihosting

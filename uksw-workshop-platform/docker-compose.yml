@@ -1,0 +1,250 @@
+version: '3.8'
+
+# SIA.Sat - UKSW Course Registration System
+# Docker Compose Configuration - Frontend connects directly to Backend
+
+networks:
+  sia-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  kafka_data:
+    driver: local
+  zookeeper_data:
+    driver: local
+
+services:
+  # ============================================
+  # DATABASE LAYER
+  # ============================================
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: sia-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: uksw_krs
+      POSTGRES_USER: krs_admin
+      POSTGRES_PASSWORD: UKSWKrs2024!Secure
+      TZ: Asia/Jakarta
+      PGTZ: Asia/Jakarta
+    command: postgres -c timezone=Asia/Jakarta
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - sia-network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U krs_admin" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  flyway:
+    image: flyway/flyway:10-alpine
+    container_name: sia-flyway
+    command: -url=jdbc:postgresql://postgres:5432/uksw_krs -user=krs_admin -password=UKSWKrs2024!Secure -connectRetries=60 migrate
+    environment:
+      TZ: Asia/Jakarta
+    volumes:
+      - ./db/migration:/flyway/sql
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - sia-network
+
+  # ============================================
+  # CACHE & SESSION LAYER
+  # ============================================
+
+  redis:
+    image: redis:7-alpine
+    container_name: sia-redis
+    restart: unless-stopped
+    command: >
+      redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass RedisUKSW2024!Pass
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - sia-network
+    healthcheck:
+      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+
+  # ============================================
+  # MESSAGE QUEUE LAYER
+  # ============================================
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: sia-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+    networks:
+      - sia-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: sia-kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 1
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    ports:
+      - "9092:9092"
+    networks:
+      - sia-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # ============================================
+  # BACKEND SERVICE (Go-based REST API)
+  # ============================================
+
+  backend-service:
+    build:
+      context: ./backend/backend-service
+      dockerfile: Dockerfile
+    container_name: sia-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
+    environment:
+      PORT: 8080
+      DATABASE_URL: postgresql://krs_admin:UKSWKrs2024!Secure@postgres:5432/uksw_krs?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: RedisUKSW2024!Pass
+      KAFKA_BROKERS: kafka:9092
+      JWT_SECRET: UKSW_SIASat_JWT_Secret_2024_ChangeThisInProduction!
+      CORS_ORIGIN: "*"
+      TZ: Asia/Jakarta
+      # OpenTelemetry
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: backend-service
+      OTEL_TRACES_EXPORTER: otlp
+    ports:
+      - "8080:8080"
+    networks:
+      - sia-network
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # ============================================
+  # FRONTEND (Static files served by Vite/Nginx)
+  # ============================================
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_WS_BASE_URL: /ws
+    container_name: sia-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend-service
+    ports:
+      - "80:80"
+    networks:
+      - sia-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
+  # ============================================
+  # OBSERVABILITY
+  # ============================================
+
+  # ============================================
+  # OBSERVABILITY
+  # ============================================
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: sia-jaeger
+    restart: unless-stopped
+    ports:
+      - "8888:16686" # Web UI
+      - "14268:14268" # Collector HTTP
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - sia-network
+
+  # ============================================
+  # PUBLIC ACCESS (NGROK)
+  # ============================================
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: sia-ngrok
+    restart: unless-stopped
+    command: "http frontend:80"
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    ports:
+      - "4040:4040"
+    networks:
+      - sia-network
+    depends_on:
+      - frontend

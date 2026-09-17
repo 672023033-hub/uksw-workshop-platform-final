@@ -1,0 +1,67 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Docker volumes
+postgres_data/
+redis_data/
+kafka_data/
+zookeeper_data/
+
+# Go binaries and build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+vendor/
+api-gateway
+api.exe
+backend_*.exe
+
+# Windows scripts (Linux only)
+*.bat
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Node modules
+node_modules/
+
+# Build artifacts
+dist/
+build/
+
+# Temporary files
+*.tmp
+*.bak
+
+# Documentation (keep only README.md)
+FIX_REPORT.md
+IMPLEMENTATION_NOTES.md
+IMPLEMENTATION_SUMMARY.md
+SEAT_UUID_FIX.md
+TESTING_GUIDE.md
+WAR_MODE_QUEUE_SYSTEM.md
+backend_debug.log
+frontend_debug.log
+
+# Production secrets
+.env.production
+secrets/*.pem

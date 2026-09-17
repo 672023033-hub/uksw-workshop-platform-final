@@ -1,0 +1,29 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+README.md
+LICENSE
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Build artifacts (keep go.mod, copy everything else)
+# We copy go.mod separately in Dockerfile

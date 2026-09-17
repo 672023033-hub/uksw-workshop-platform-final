@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #E8F1FA;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #C5D8ED;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #0066B3;
+}
+
+/* Animate-in classes */
+.animate-in {
+  animation: fadeInUp 0.5s ease-out forwards;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Material Symbols adjustments */
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
+/* Loading bar animation */
+@keyframes loading-bar {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+.animate-loading-bar {
+  animation: loading-bar 1.5s ease-in-out infinite;
+}
+
+/* Running man bounce animation */
+@keyframes running-man {
+
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.animate-running-man {
+  animation: running-man 0.6s ease-in-out infinite;
+}
+
+/* Safe Area Utilities for Mobile */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
