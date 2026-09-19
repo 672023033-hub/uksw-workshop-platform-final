@@ -1,5 +1,5 @@
 // API Client for SIA.Sat - React Version
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://192.168.0.111:8080/api'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 
 const getWsUrl = () => {
     const envUrl = import.meta.env.VITE_WS_BASE_URL;

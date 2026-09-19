@@ -28,7 +28,7 @@ func main() {
 
 	// Get configuration
 	port := getEnv("PORT", "8080")
-	corsOrigin := getEnv("CORS_ORIGIN", "http://192.168.0.111")
+	corsOrigin := getEnv("CORS_ORIGIN", "http://localhost:5173")
 
 	// Initialize Gin with release mode for production
 	gin.SetMode(gin.ReleaseMode)
