@@ -245,9 +245,10 @@ func init() {
 	redisPass := os.Getenv("REDIS_PASSWORD")
 
 	redisClient = redis.NewClient(&redis.Options{
-		Addr:     redisAddr,
-		Password: redisPass,
-		DB:       0,
+		Addr:      redisAddr,
+		Password:  redisPass,
+		DB:        0,
+		TLSConfig: &tls.Config{},
 	})
 
 	// Test Redis connection
