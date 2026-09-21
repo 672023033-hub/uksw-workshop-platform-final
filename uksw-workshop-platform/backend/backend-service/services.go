@@ -328,6 +328,7 @@ func startSlotCleanupWorker() {
 
 // Authentication Service Functions
 func AuthenticateUser(ctx context.Context, username, password, role string) (*User, string, error) {
+	log.Printf("[LOGIN DEBUG] AuthenticateUser dipanggil: username=%s role=%s", username, role)
 	ctx, span := tracer.Start(ctx, "AuthenticateUser")
 	defer span.End()
 	span.SetAttributes(
