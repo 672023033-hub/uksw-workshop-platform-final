@@ -393,6 +393,8 @@ func AuthenticateUser(ctx context.Context, username, password, role string) (*Us
 	}
 
 	// Check if user is approved
+
+	log.Printf("[LOGIN DEBUG] bcrypt verification SUCCESS: username=%s", username)
 	if !approved || approvalStatus != "APPROVED" {
 		log.Printf("[AUTH FAILED] Account not approved for user=%s (approved=%v, status=%s)", username, approved, approvalStatus)
 		return nil, "", errors.New("ACCOUNT_PENDING_APPROVAL")
