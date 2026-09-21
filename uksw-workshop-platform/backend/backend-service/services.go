@@ -327,6 +327,13 @@ func startSlotCleanupWorker() {
 }
 
 // Authentication Service Functions
+func bcryptHashPrefix(hash string) string {
+	if len(hash) > 7 {
+		return hash[:7]
+	}
+	return hash
+}
+
 func AuthenticateUser(ctx context.Context, username, password, role string) (*User, string, error) {
 	log.Printf("[LOGIN DEBUG] AuthenticateUser dipanggil: username=%s role=%s", username, role)
 	ctx, span := tracer.Start(ctx, "AuthenticateUser")
@@ -362,6 +369,8 @@ func AuthenticateUser(ctx context.Context, username, password, role string) (*Us
 	)
 	dbSpan.End()
 
+	log.Printf("[LOGIN DEBUG] Query result: username=%s role=%s passwordHashEmpty=%v approved=%v approvalStatus=%s", username, role, user.PasswordHash == "", approved, approvalStatus)
+
 	if err != nil {
 		if err == sql.ErrNoRows {
 			log.Printf("[AUTH FAILED] User not found: username=%s, role=%s", username, role)
@@ -377,6 +386,8 @@ func AuthenticateUser(ctx context.Context, username, password, role string) (*Us
 		[]byte(user.PasswordHash),
 		[]byte(password),
 	); err != nil {
+		log.Printf("[LOGIN DEBUG] bcrypt verification failed: username=%s hashPrefix=%s passwordLength=%d error=%v",
+			username, bcryptHashPrefix(user.PasswordHash), len(password), err)
 		log.Printf("[AUTH FAILED] Password mismatch for user=%s", username)
 		return nil, "", errors.New("INVALID_CREDENTIALS")
 	}
