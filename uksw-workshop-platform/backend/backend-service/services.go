@@ -393,8 +393,8 @@ func AuthenticateUser(ctx context.Context, username, password, role string) (*Us
 	}
 
 	// Check if user is approved
-
 	log.Printf("[LOGIN DEBUG] bcrypt verification SUCCESS: username=%s", username)
+
 	if !approved || approvalStatus != "APPROVED" {
 		log.Printf("[AUTH FAILED] Account not approved for user=%s (approved=%v, status=%s)", username, approved, approvalStatus)
 		return nil, "", errors.New("ACCOUNT_PENDING_APPROVAL")
@@ -403,8 +403,11 @@ func AuthenticateUser(ctx context.Context, username, password, role string) (*Us
 	// Generate JWT token
 	token, err := GenerateJWT(user.ID, user.NIM, user.Role)
 	if err != nil {
+		log.Printf("[LOGIN DEBUG] GenerateJWT FAILED: username=%s error=%v", username, err)
 		return nil, "", err
 	}
+
+	log.Printf("[LOGIN DEBUG] GenerateJWT SUCCESS: username=%s", username)
 
 	// Store session in Redis
 	sessionKey := fmt.Sprintf("session:%s", user.ID)
@@ -428,8 +431,11 @@ func AuthenticateUser(ctx context.Context, username, password, role string) (*Us
 
 	_, err = pipeline.Exec(ctx)
 	if err != nil {
+		log.Printf("[LOGIN DEBUG] Redis session pipeline FAILED: username=%s error=%v", username, err)
 		return nil, "", err
 	}
+
+	log.Printf("[LOGIN DEBUG] Redis session pipeline SUCCESS: username=%s", username)
 
 	return &user, token, nil
 }
