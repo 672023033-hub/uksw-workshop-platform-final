@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -370,8 +371,11 @@ func AuthenticateUser(ctx context.Context, username, password, role string) (*Us
 		return nil, "", errors.New("INVALID_CREDENTIALS")
 	}
 
-	// Verify password (plaintext comparison for development)
-	if user.PasswordHash != password {
+	// Verify password using bcrypt
+	if err := bcrypt.CompareHashAndPassword(
+		[]byte(user.PasswordHash),
+		[]byte(password),
+	); err != nil {
 		log.Printf("[AUTH FAILED] Password mismatch for user=%s", username)
 		return nil, "", errors.New("INVALID_CREDENTIALS")
 	}
@@ -2199,10 +2203,18 @@ func RegisterUser(ctx context.Context, req RegisterRequest) error {
 
 	// Insert user (trigger will auto-approve if MENTOR/ADMIN)
 	// For STUDENT, will remain approved=false
+	passwordHash, err := bcrypt.GenerateFromPassword(
+		[]byte(req.Password),
+		bcrypt.DefaultCost,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to hash password: %v", err)
+	}
+
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO users (id, nim_nidn, name, email, password_hash, role, approved, approval_status)
 		VALUES ($1, $2, $3, $4, $5, $6, false, 'PENDING')
-	`, userId, req.NimNidn, req.Name, req.Email, req.Password, req.Role)
+	`, userId, req.NimNidn, req.Name, req.Email, string(passwordHash), req.Role)
 	if err != nil {
 		return fmt.Errorf("failed to create user: %v", err)
 	}
