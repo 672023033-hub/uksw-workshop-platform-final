@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -118,14 +119,21 @@ type SeatReservation struct {
 // Kafka configuration helpers. Local development can keep PLAINTEXT Kafka,
 // while Aiven uses TLS + SASL/SCRAM without changing the queue business logic.
 func kafkaTLSConfig() (*tls.Config, error) {
-	caFile := os.Getenv("KAFKA_CA_FILE")
-	if caFile == "" {
-		return &tls.Config{MinVersion: tls.VersionTLS12}, nil
-	}
+	// Railway can provide the Aiven CA as a multiline environment variable.
+	// Keep KAFKA_CA_FILE as a fallback for local/container deployments.
+	caPEM := []byte(os.Getenv("KAFKA_CA_CERT"))
 
-	caPEM, err := os.ReadFile(caFile)
-	if err != nil {
-		return nil, fmt.Errorf("read Kafka CA certificate: %w", err)
+	if len(bytes.TrimSpace(caPEM)) == 0 {
+		caFile := os.Getenv("KAFKA_CA_FILE")
+		if caFile == "" {
+			return &tls.Config{MinVersion: tls.VersionTLS12}, nil
+		}
+
+		var err error
+		caPEM, err = os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("read Kafka CA certificate: %w", err)
+		}
 	}
 
 	pool, err := x509.SystemCertPool()
