@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -239,21 +240,85 @@ func init() {
 	// _, _ = db.Exec(`DROP FUNCTION IF EXISTS generate_seats_for_session(UUID)`)
 	log.Println("Database connection established.")
 
-	// Connect to Redis
-	redisAddr := os.Getenv("REDIS_ADDR")
+	// Connect to Redis. Railway/Upstash commonly uses TLS (rediss://).
+	// Keep plain Redis support for local Docker deployments.
+	redisAddr := strings.TrimSpace(os.Getenv("REDIS_ADDR"))
 	redisPass := os.Getenv("REDIS_PASSWORD")
+	redisDB := 0
+	redisTLS := strings.EqualFold(strings.TrimSpace(os.Getenv("REDIS_TLS")), "true")
 
-	redisClient = redis.NewClient(&redis.Options{
+	// Also support REDIS_URL when a provider supplies a full redis/rediss URL.
+	redisURL := strings.TrimSpace(os.Getenv("REDIS_URL"))
+	if redisURL != "" {
+		u, parseErr := url.Parse(redisURL)
+		if parseErr != nil {
+			panic("Invalid REDIS_URL: " + parseErr.Error())
+		}
+		if u.Host != "" {
+			redisAddr = u.Host
+		}
+		if u.User != nil {
+			if username := u.User.Username(); username != "" && redisPass == "" {
+				log.Printf("Redis URL contains username %q", username)
+			}
+			if password, ok := u.User.Password(); ok {
+				redisPass = password
+			}
+		}
+		if u.Scheme == "rediss" {
+			redisTLS = true
+		}
+		if u.Query().Get("db") != "" {
+			if _, scanErr := fmt.Sscanf(u.Query().Get("db"), "%d", &redisDB); scanErr != nil {
+				log.Printf("Invalid Redis db value %q; using DB 0", u.Query().Get("db"))
+				redisDB = 0
+			}
+		}
+	}
+
+	// REDIS_ADDR may itself be a rediss:// URL.
+	if strings.HasPrefix(strings.ToLower(redisAddr), "rediss://") || strings.HasPrefix(strings.ToLower(redisAddr), "redis://") {
+		u, parseErr := url.Parse(redisAddr)
+		if parseErr != nil {
+			panic("Invalid REDIS_ADDR: " + parseErr.Error())
+		}
+		if u.Host != "" {
+			redisAddr = u.Host
+		}
+		if u.User != nil {
+			if password, ok := u.User.Password(); ok && redisPass == "" {
+				redisPass = password
+			}
+		}
+		if u.Scheme == "rediss" {
+			redisTLS = true
+		}
+	}
+
+	if redisAddr == "" {
+		panic("REDIS_ADDR or REDIS_URL is required")
+	}
+
+	redisOptions := &redis.Options{
 		Addr:     redisAddr,
 		Password: redisPass,
-		DB:       0,
-	})
+		DB:       redisDB,
+	}
+	if redisTLS {
+		redisOptions.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		log.Printf("Redis TLS enabled: %s", redisAddr)
+	} else {
+		log.Printf("Redis TLS disabled: %s", redisAddr)
+	}
+
+	redisClient = redis.NewClient(redisOptions)
 
 	// Test Redis connection
 	_, err = redisClient.Ping(ctx).Result()
 	if err != nil {
 		panic("Failed to connect to Redis: " + err.Error())
 	}
+	log.Println("Redis connection established.")
 
 	// Initialize Kafka writer
 	kafkaBrokers := os.Getenv("KAFKA_BROKERS") // kode program 6 : Baris 01–41
