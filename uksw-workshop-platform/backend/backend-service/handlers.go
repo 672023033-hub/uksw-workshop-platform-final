@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"net/http"
 	"strings"
 
@@ -306,6 +307,7 @@ func handleGetAvailableWorkshops(c *gin.Context) {
 
 	courses, pagination, err := GetAvailableWorkshops(c.Request.Context(), semester, faculty, page, limit)
 	if err != nil {
+		log.Printf("[WORKSHOP DEBUG] GetAvailableWorkshops failed: semester=%s faculty=%s page=%s limit=%s err=%v", semester, faculty, page, limit, err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error":   "DATABASE_ERROR",

@@ -23,10 +23,10 @@ func InitTracer() func(context.Context) error {
 
 	// Get OTLP endpoint from environment variable
 	// Supports formats: "http://jaeger:4318", "jaeger:4318", or "localhost:4318"
-	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	endpoint := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 	if endpoint == "" {
-		endpoint = "http://localhost:4318" // Default OTLP HTTP endpoint
-		log.Printf("[Telemetry] No OTEL_EXPORTER_OTLP_ENDPOINT set, using default: %s", endpoint)
+		log.Printf("[Telemetry] OTEL_EXPORTER_OTLP_ENDPOINT not set; trace export disabled")
+		return func(ctx context.Context) error { return nil }
 	}
 
 	// Ensure endpoint has http:// prefix for otlptracehttp

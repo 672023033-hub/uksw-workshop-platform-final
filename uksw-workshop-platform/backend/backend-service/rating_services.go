@@ -11,12 +11,11 @@ import (
 
 // RateWorkshop allows a student to rate a completed workshop
 func RateWorkshop(ctx context.Context, userId, enrollmentId string, rating int, review string) error {
-	ctx, span := tracer.Start(ctx, "RateWorkshop")
-	defer span.End()
-
 	if rating < 1 || rating > 5 {
 		return errors.New("RATING_MUST_BE_BETWEEN_1_AND_5")
 	}
+	ctx, span := tracer.Start(ctx, "RateWorkshop")
+	defer span.End()
 
 	// 1. Verify enrollment exists, belongs to user, and fetch workshop date
 	var workshopDateStr sql.NullString
@@ -128,12 +127,8 @@ func GetStudentEnrollmentHistory(ctx context.Context, userId string) ([]Enrollme
 
 	rows, err := db.QueryContext(ctx, query, userId)
 	if err != nil {
-		log.Printf("[ENROLLMENT DEBUG] GetStudentEnrollmentHistory QUERY FAILED: userId=%s error=%v", userId, err)
-		span.RecordError(err)
 		return nil, err
 	}
-	log.Printf("[ENROLLMENT DEBUG] GetStudentEnrollmentHistory QUERY SUCCESS: userId=%s", userId)
-
 	defer rows.Close()
 
 	var history []Enrollment
@@ -188,7 +183,6 @@ func GetStudentEnrollmentHistory(ctx context.Context, userId string) ([]Enrollme
 
 	if err := rows.Err(); err != nil {
 		log.Printf("[ENROLLMENT DEBUG] GetStudentEnrollmentHistory ROWS FAILED: userId=%s error=%v", userId, err)
-		span.RecordError(err)
 		return nil, err
 	}
 
@@ -283,12 +277,6 @@ func GetMentorFeedbackSummary(ctx context.Context, mentorUserID string) (*Mentor
 		})
 	}
 
-	if err := rows.Err(); err != nil {
-		log.Printf("[FEEDBACK DEBUG] GetMentorFeedbackSummary ROWS FAILED: mentorUserID=%s error=%v", mentorUserID, err)
-		span.RecordError(err)
-		return nil, err
-	}
-
 	// Compute averages
 	summary := &MentorFeedbackSummary{Workshops: []WorkshopFeedback{}}
 	totalRatingSum := 0
@@ -311,6 +299,11 @@ func GetMentorFeedbackSummary(ctx context.Context, mentorUserID string) (*Mentor
 	summary.TotalRatings = totalRatingCount
 	if totalRatingCount > 0 {
 		summary.OverallAvg = float64(totalRatingSum) / float64(totalRatingCount)
+	}
+
+	if err := rows.Err(); err != nil {
+		log.Printf("[FEEDBACK DEBUG] GetMentorFeedbackSummary ROWS FAILED: userId=%s error=%v", userId, err)
+		return nil, err
 	}
 
 	return summary, nil
