@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 	kafka "github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl"
 	"github.com/segmentio/kafka-go/sasl/scram"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -143,29 +144,32 @@ func kafkaTLSConfig() (*tls.Config, error) {
 	}, nil
 }
 
-func kafkaSASLMechanism() (scram.Mechanism, error) {
+func kafkaSASLMechanism() (sasl.Mechanism, error) {
 	username := os.Getenv("KAFKA_SASL_USERNAME")
 	password := os.Getenv("KAFKA_SASL_PASSWORD")
 	mechanism := strings.ToUpper(os.Getenv("KAFKA_SASL_MECHANISM"))
+
 	if mechanism == "" {
 		mechanism = "SCRAM-SHA-512"
 	}
 
 	if username == "" || password == "" {
-		return nil, fmt.Errorf("KAFKA_SASL_USERNAME and KAFKA_SASL_PASSWORD are required when KAFKA_TLS=true")
+		return nil, fmt.Errorf(
+			"KAFKA_SASL_USERNAME and KAFKA_SASL_PASSWORD are required when KAFKA_TLS=true",
+		)
 	}
 
-	var algo scram.HashGeneratorFcn
 	switch mechanism {
 	case "SCRAM-SHA-256":
-		algo = scram.SHA256
+		return scram.Mechanism(scram.SHA256, username, password)
 	case "SCRAM-SHA-512":
-		algo = scram.SHA512
+		return scram.Mechanism(scram.SHA512, username, password)
 	default:
-		return nil, fmt.Errorf("unsupported KAFKA_SASL_MECHANISM %q; use SCRAM-SHA-256 or SCRAM-SHA-512", mechanism)
+		return nil, fmt.Errorf(
+			"unsupported KAFKA_SASL_MECHANISM %q; use SCRAM-SHA-256 or SCRAM-SHA-512",
+			mechanism,
+		)
 	}
-
-	return scram.Mechanism(algo, username, password)
 }
 
 func getKafkaDialer() *kafka.Dialer {

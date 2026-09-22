@@ -302,7 +302,7 @@ func GetMentorFeedbackSummary(ctx context.Context, mentorUserID string) (*Mentor
 	}
 
 	if err := rows.Err(); err != nil {
-		log.Printf("[FEEDBACK DEBUG] GetMentorFeedbackSummary ROWS FAILED: userId=%s error=%v", userId, err)
+		log.Printf("[FEEDBACK DEBUG] GetMentorFeedbackSummary ROWS FAILED: mentorUserID=%s error=%v", mentorUserID, err)
 		return nil, err
 	}
 
