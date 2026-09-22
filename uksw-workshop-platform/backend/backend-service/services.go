@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -119,21 +118,14 @@ type SeatReservation struct {
 // Kafka configuration helpers. Local development can keep PLAINTEXT Kafka,
 // while Aiven uses TLS + SASL/SCRAM without changing the queue business logic.
 func kafkaTLSConfig() (*tls.Config, error) {
-	// Railway can provide the Aiven CA as a multiline environment variable.
-	// Keep KAFKA_CA_FILE as a fallback for local/container deployments.
-	caPEM := []byte(os.Getenv("KAFKA_CA_CERT"))
+	caFile := os.Getenv("KAFKA_CA_FILE")
+	if caFile == "" {
+		return &tls.Config{MinVersion: tls.VersionTLS12}, nil
+	}
 
-	if len(bytes.TrimSpace(caPEM)) == 0 {
-		caFile := os.Getenv("KAFKA_CA_FILE")
-		if caFile == "" {
-			return &tls.Config{MinVersion: tls.VersionTLS12}, nil
-		}
-
-		var err error
-		caPEM, err = os.ReadFile(caFile)
-		if err != nil {
-			return nil, fmt.Errorf("read Kafka CA certificate: %w", err)
-		}
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read Kafka CA certificate: %w", err)
 	}
 
 	pool, err := x509.SystemCertPool()
@@ -335,13 +327,6 @@ func startSlotCleanupWorker() {
 }
 
 // Authentication Service Functions
-func bcryptHashPrefix(hash string) string {
-	if len(hash) > 7 {
-		return hash[:7]
-	}
-	return hash
-}
-
 func AuthenticateUser(ctx context.Context, username, password, role string) (*User, string, error) {
 	log.Printf("[LOGIN DEBUG] AuthenticateUser dipanggil: username=%s role=%s", username, role)
 	ctx, span := tracer.Start(ctx, "AuthenticateUser")
@@ -377,8 +362,6 @@ func AuthenticateUser(ctx context.Context, username, password, role string) (*Us
 	)
 	dbSpan.End()
 
-	log.Printf("[LOGIN DEBUG] Query result: username=%s role=%s passwordHashEmpty=%v approved=%v approvalStatus=%s", username, role, user.PasswordHash == "", approved, approvalStatus)
-
 	if err != nil {
 		if err == sql.ErrNoRows {
 			log.Printf("[AUTH FAILED] User not found: username=%s, role=%s", username, role)
@@ -394,15 +377,11 @@ func AuthenticateUser(ctx context.Context, username, password, role string) (*Us
 		[]byte(user.PasswordHash),
 		[]byte(password),
 	); err != nil {
-		log.Printf("[LOGIN DEBUG] bcrypt verification failed: username=%s hashPrefix=%s passwordLength=%d error=%v",
-			username, bcryptHashPrefix(user.PasswordHash), len(password), err)
 		log.Printf("[AUTH FAILED] Password mismatch for user=%s", username)
 		return nil, "", errors.New("INVALID_CREDENTIALS")
 	}
 
 	// Check if user is approved
-	log.Printf("[LOGIN DEBUG] bcrypt verification SUCCESS: username=%s", username)
-
 	if !approved || approvalStatus != "APPROVED" {
 		log.Printf("[AUTH FAILED] Account not approved for user=%s (approved=%v, status=%s)", username, approved, approvalStatus)
 		return nil, "", errors.New("ACCOUNT_PENDING_APPROVAL")
@@ -411,11 +390,8 @@ func AuthenticateUser(ctx context.Context, username, password, role string) (*Us
 	// Generate JWT token
 	token, err := GenerateJWT(user.ID, user.NIM, user.Role)
 	if err != nil {
-		log.Printf("[LOGIN DEBUG] GenerateJWT FAILED: username=%s error=%v", username, err)
 		return nil, "", err
 	}
-
-	log.Printf("[LOGIN DEBUG] GenerateJWT SUCCESS: username=%s", username)
 
 	// Store session in Redis
 	sessionKey := fmt.Sprintf("session:%s", user.ID)
@@ -439,11 +415,8 @@ func AuthenticateUser(ctx context.Context, username, password, role string) (*Us
 
 	_, err = pipeline.Exec(ctx)
 	if err != nil {
-		log.Printf("[LOGIN DEBUG] Redis session pipeline FAILED: username=%s error=%v", username, err)
 		return nil, "", err
 	}
-
-	log.Printf("[LOGIN DEBUG] Redis session pipeline SUCCESS: username=%s", username)
 
 	return &user, token, nil
 }
@@ -1656,9 +1629,17 @@ type RegisterRequest struct {
 
 // CreateWorkshop creates a new workshop and its first session/schedule.
 // Returns the new sessionId so callers can perform follow-up operations (e.g. image upload).
-func CreateWorkshop(ctx context.Context, userId string, req CreateClassRequest) (string, error) {
+func CreateWorkshop(ctx context.Context, userId string, req CreateClassRequest) (sessionID string, err error) {
 	ctx, span := tracer.Start(ctx, "CreateWorkshop")
 	defer span.End()
+	defer func() {
+		if err != nil {
+			log.Printf("[WORKSHOP DEBUG] CreateWorkshop FAILED: userId=%s error=%v", userId, err)
+		} else {
+			log.Printf("[WORKSHOP DEBUG] CreateWorkshop SUCCESS: userId=%s sessionId=%s", userId, sessionID)
+		}
+	}()
+	log.Printf("[WORKSHOP DEBUG] CreateWorkshop START: userId=%s name=%s type=%s month=%d year=%d quota=%d", userId, req.Name, req.WorkshopType, req.Month, req.Year, req.Quota)
 
 	// Backdate validation: reject if month/year is in the past
 	now := time.Now()
