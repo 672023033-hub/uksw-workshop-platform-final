@@ -16,12 +16,10 @@ import (
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 	kafka "github.com/segmentio/kafka-go"
-	"github.com/segmentio/kafka-go/sasl"
 	"github.com/segmentio/kafka-go/sasl/scram"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -118,57 +116,53 @@ type SeatReservation struct {
 // Kafka configuration helpers. Local development can keep PLAINTEXT Kafka,
 // while Aiven uses TLS + SASL/SCRAM without changing the queue business logic.
 func kafkaTLSConfig() (*tls.Config, error) {
-	caFile := os.Getenv("KAFKA_CA_FILE")
-	if caFile == "" {
-		return &tls.Config{MinVersion: tls.VersionTLS12}, nil
-	}
+	caPEM := strings.TrimSpace(os.Getenv("KAFKA_CA_CERT"))
+	caFile := strings.TrimSpace(os.Getenv("KAFKA_CA_FILE"))
 
-	caPEM, err := os.ReadFile(caFile)
-	if err != nil {
-		return nil, fmt.Errorf("read Kafka CA certificate: %w", err)
+	if caPEM == "" && caFile != "" {
+		data, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("read Kafka CA certificate: %w", err)
+		}
+		caPEM = string(data)
 	}
 
 	pool, err := x509.SystemCertPool()
 	if err != nil || pool == nil {
 		pool = x509.NewCertPool()
 	}
-	if !pool.AppendCertsFromPEM(caPEM) {
+
+	if caPEM != "" && !pool.AppendCertsFromPEM([]byte(caPEM)) {
 		return nil, fmt.Errorf("failed to append Kafka CA certificate")
 	}
 
 	return &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		RootCAs:    pool,
+		ServerName: strings.Split(os.Getenv("KAFKA_BROKERS"), ":")[0],
 	}, nil
 }
 
-func kafkaSASLMechanism() (sasl.Mechanism, error) {
+func kafkaSASLMechanism() (scram.Mechanism, error) {
 	username := os.Getenv("KAFKA_SASL_USERNAME")
 	password := os.Getenv("KAFKA_SASL_PASSWORD")
 	mechanism := strings.ToUpper(os.Getenv("KAFKA_SASL_MECHANISM"))
-
 	if mechanism == "" {
 		mechanism = "SCRAM-SHA-512"
 	}
 
 	if username == "" || password == "" {
-		return nil, fmt.Errorf(
-			"KAFKA_SASL_USERNAME and KAFKA_SASL_PASSWORD are required when KAFKA_TLS=true",
-		)
+		return nil, fmt.Errorf("KAFKA_SASL_USERNAME and KAFKA_SASL_PASSWORD are required when KAFKA_TLS=true")
 	}
 
-	var algo scram.Algorithm
-
+	var algo scram.HashGeneratorFcn
 	switch mechanism {
 	case "SCRAM-SHA-256":
 		algo = scram.SHA256
 	case "SCRAM-SHA-512":
 		algo = scram.SHA512
 	default:
-		return nil, fmt.Errorf(
-			"unsupported KAFKA_SASL_MECHANISM %q; use SCRAM-SHA-256 or SCRAM-SHA-512",
-			mechanism,
-		)
+		return nil, fmt.Errorf("unsupported KAFKA_SASL_MECHANISM %q; use SCRAM-SHA-256 or SCRAM-SHA-512", mechanism)
 	}
 
 	return scram.Mechanism(algo, username, password)
@@ -246,10 +240,9 @@ func init() {
 	redisPass := os.Getenv("REDIS_PASSWORD")
 
 	redisClient = redis.NewClient(&redis.Options{
-		Addr:      redisAddr,
-		Password:  redisPass,
-		DB:        0,
-		TLSConfig: &tls.Config{},
+		Addr:     redisAddr,
+		Password: redisPass,
+		DB:       0,
 	})
 
 	// Test Redis connection
@@ -328,7 +321,6 @@ func startSlotCleanupWorker() {
 
 // Authentication Service Functions
 func AuthenticateUser(ctx context.Context, username, password, role string) (*User, string, error) {
-	log.Printf("[LOGIN DEBUG] AuthenticateUser dipanggil: username=%s role=%s", username, role)
 	ctx, span := tracer.Start(ctx, "AuthenticateUser")
 	defer span.End()
 	span.SetAttributes(
@@ -372,11 +364,8 @@ func AuthenticateUser(ctx context.Context, username, password, role string) (*Us
 		return nil, "", errors.New("INVALID_CREDENTIALS")
 	}
 
-	// Verify password using bcrypt
-	if err := bcrypt.CompareHashAndPassword(
-		[]byte(user.PasswordHash),
-		[]byte(password),
-	); err != nil {
+	// Verify password (plaintext comparison for development)
+	if user.PasswordHash != password {
 		log.Printf("[AUTH FAILED] Password mismatch for user=%s", username)
 		return nil, "", errors.New("INVALID_CREDENTIALS")
 	}
@@ -1393,13 +1382,25 @@ func formatTimeHHMM(t string) string {
 }
 
 func GetStudentWorkshops(ctx context.Context, userId string) ([]Enrollment, error) {
-	ctx, span := tracer.Start(ctx, "GetStudentCourses")
+	ctx, span := tracer.Start(ctx, "GetStudentWorkshops")
 	defer span.End()
 	span.SetAttributes(attribute.String("user.id", userId))
 
+	log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops START: userId=%s", userId)
+
 	query := `
-		SELECT e.id, c.code, c.name, cl.class_code, c.credits, e.enrolled_at, u.name as mentor_name, cl.id as class_id,
-		       COALESCE(st.seat_number, '') as seat_number, COALESCE(st.id::text, '') as seat_id
+		SELECT
+			e.id,
+			c.code,
+			c.name,
+			cl.class_code,
+			c.credits,
+			to_char(e.enrolled_at, 'YYYY-MM-DD HH24:MI:SS'),
+			u.name as mentor_name,
+			cl.id as class_id,
+			to_char(cl.date, 'YYYY-MM-DD'),
+			COALESCE(st.seat_number, ''),
+			COALESCE(st.id::text, '')
 		FROM enrollments e
 		JOIN students s ON e.student_id = s.id
 		JOIN workshop_sessions cl ON e.class_id = cl.id
@@ -1415,6 +1416,7 @@ func GetStudentWorkshops(ctx context.Context, userId string) ([]Enrollment, erro
 
 	rows, err := db.QueryContext(ctx, query, userId)
 	if err != nil {
+		log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops QUERY FAILED: userId=%s error=%v", userId, err)
 		span.RecordError(err)
 		return nil, err
 	}
@@ -1423,6 +1425,8 @@ func GetStudentWorkshops(ctx context.Context, userId string) ([]Enrollment, erro
 	var enrollments []Enrollment
 	for rows.Next() {
 		var enrollment Enrollment
+		var dateStr sql.NullString
+
 		err := rows.Scan(
 			&enrollment.ID,
 			&enrollment.WorkshopCode,
@@ -1432,92 +1436,90 @@ func GetStudentWorkshops(ctx context.Context, userId string) ([]Enrollment, erro
 			&enrollment.EnrolledAt,
 			&enrollment.Mentor,
 			&enrollment.SessionID,
+			&dateStr,
 			&enrollment.SeatNumber,
 			&enrollment.SeatID,
 		)
 		if err != nil {
-			continue
+			log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops SCAN FAILED: userId=%s error=%v", userId, err)
+			span.RecordError(err)
+			return nil, err
 		}
 
-		// Fetch schedules for this class
+		if dateStr.Valid {
+			enrollment.Date = dateStr.String
+		}
+
 		schedRows, err := db.QueryContext(ctx, `
 			SELECT day_of_week, start_time::text, end_time::text, room
 			FROM schedules
 			WHERE class_id = $1
 			ORDER BY start_time
 		`, enrollment.SessionID)
-
-		if err == nil {
+		if err != nil {
+			log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops SCHEDULE QUERY FAILED: userId=%s sessionId=%s error=%v", userId, enrollment.SessionID, err)
+			enrollment.Schedule = []Schedule{}
+		} else {
 			var schedules []Schedule
 			var schedStr string
 
 			for schedRows.Next() {
-				var s Schedule
+				var schedule Schedule
 				var start, end string
-				schedRows.Scan(&s.DayOfWeek, &start, &end, &s.Room)
+				if err := schedRows.Scan(&schedule.DayOfWeek, &start, &end, &schedule.Room); err != nil {
+					schedRows.Close()
+					log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops SCHEDULE SCAN FAILED: userId=%s sessionId=%s error=%v", userId, enrollment.SessionID, err)
+					return nil, err
+				}
 
-				// Format times - extract HH:MM
-				s.StartTime = formatTimeHHMM(start)
-				s.EndTime = formatTimeHHMM(end)
+				schedule.StartTime = formatTimeHHMM(start)
+				schedule.EndTime = formatTimeHHMM(end)
+				schedules = append(schedules, schedule)
 
-				schedules = append(schedules, s)
-
-				// Build string representation: "MON 13 02 2026 08:00-10:00"
-				// We need the date from the enrollment
+				var dateLabel string
+				if enrollment.Date != "" {
+					if parsedDate, parseErr := time.Parse("2006-01-02", enrollment.Date); parseErr == nil {
+						dateLabel = fmt.Sprintf("%s %02d-%02d-%04d",
+							strings.ToUpper(parsedDate.Format("Mon")), parsedDate.Day(), parsedDate.Month(), parsedDate.Year())
+					}
+				}
+				if dateLabel == "" {
+					dateLabel = strings.ToUpper(schedule.DayOfWeek)
+				}
 				if schedStr != "" {
 					schedStr += ", "
 				}
+				schedStr += fmt.Sprintf("%s %s-%s", dateLabel, schedule.StartTime, schedule.EndTime)
+			}
 
-				// Parse date to format it as DD-MM-YYYY
-				var dateStr string
-				if enrollment.Date != "" {
-					parsedDate, _ := time.Parse("2006-01-02", enrollment.Date)
-					// Format: MON 13-02-2026
-					// Mon = Jan 2, 06 = 2006
-					dayName := strings.ToUpper(parsedDate.Format("Mon"))
-					dayStr := fmt.Sprintf("%02d", parsedDate.Day())
-					monthStr := fmt.Sprintf("%02d", parsedDate.Month())
-					yearStr := fmt.Sprintf("%d", parsedDate.Year())
-					dateStr = fmt.Sprintf("%s %s-%s-%s", dayName, dayStr, monthStr, yearStr)
-				} else {
-					// Fallback if no date (shouldn't happen with valid data)
-					if len(s.DayOfWeek) >= 3 {
-						dateStr = strings.ToUpper(s.DayOfWeek[:3])
-					} else {
-						dateStr = strings.ToUpper(s.DayOfWeek)
-					}
-				}
-
-				schedStr += fmt.Sprintf("%s %s-%s", dateStr, s.StartTime, s.EndTime)
+			if err := schedRows.Err(); err != nil {
+				schedRows.Close()
+				log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops SCHEDULE ROWS FAILED: userId=%s sessionId=%s error=%v", userId, enrollment.SessionID, err)
+				return nil, err
 			}
 			schedRows.Close()
 			enrollment.Schedule = schedules
 			enrollment.ScheduleStr = schedStr
-		} else {
-			enrollment.Schedule = []Schedule{}
 		}
 
-		// Use date as schedule if schedule string is empty
 		if enrollment.ScheduleStr == "" && enrollment.Date != "" {
-			// Format date only if no schedule
-			parsedDate, _ := time.Parse("2006-01-02", enrollment.Date)
-			dayName := strings.ToUpper(parsedDate.Format("Mon"))
-			dayStr := fmt.Sprintf("%02d", parsedDate.Day())
-			monthStr := fmt.Sprintf("%02d", parsedDate.Month())
-			yearStr := fmt.Sprintf("%d", parsedDate.Year())
-			enrollment.ScheduleStr = fmt.Sprintf("%s %s-%s-%s", dayName, dayStr, monthStr, yearStr)
+			if parsedDate, parseErr := time.Parse("2006-01-02", enrollment.Date); parseErr == nil {
+				enrollment.ScheduleStr = fmt.Sprintf("%s %02d-%02d-%04d",
+					strings.ToUpper(parsedDate.Format("Mon")), parsedDate.Day(), parsedDate.Month(), parsedDate.Year())
+			}
 		}
 
-		// If date is already in schedule, we don't need to append it again like the old code
-		// enrollment.Date = "" // Keep it for frontend reference if needed, or clear it. Old code cleared it.
-		// Let's keep consistent with valid JSON response
-
-		// Calculate Tuition (250,000 per credit)
 		enrollment.Tuition = float64(enrollment.Credits) * 250000.0
-
 		enrollments = append(enrollments, enrollment)
 	}
 
+	if err := rows.Err(); err != nil {
+		log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops ROWS FAILED: userId=%s error=%v", userId, err)
+		span.RecordError(err)
+		return nil, err
+	}
+
+	log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops SUCCESS: userId=%s count=%d", userId, len(enrollments))
 	return enrollments, nil
 }
 
@@ -1629,17 +1631,9 @@ type RegisterRequest struct {
 
 // CreateWorkshop creates a new workshop and its first session/schedule.
 // Returns the new sessionId so callers can perform follow-up operations (e.g. image upload).
-func CreateWorkshop(ctx context.Context, userId string, req CreateClassRequest) (sessionID string, err error) {
+func CreateWorkshop(ctx context.Context, userId string, req CreateClassRequest) (string, error) {
 	ctx, span := tracer.Start(ctx, "CreateWorkshop")
 	defer span.End()
-	defer func() {
-		if err != nil {
-			log.Printf("[WORKSHOP DEBUG] CreateWorkshop FAILED: userId=%s error=%v", userId, err)
-		} else {
-			log.Printf("[WORKSHOP DEBUG] CreateWorkshop SUCCESS: userId=%s sessionId=%s", userId, sessionID)
-		}
-	}()
-	log.Printf("[WORKSHOP DEBUG] CreateWorkshop START: userId=%s name=%s type=%s month=%d year=%d quota=%d", userId, req.Name, req.WorkshopType, req.Month, req.Year, req.Quota)
 
 	// Backdate validation: reject if month/year is in the past
 	now := time.Now()
@@ -2212,18 +2206,10 @@ func RegisterUser(ctx context.Context, req RegisterRequest) error {
 
 	// Insert user (trigger will auto-approve if MENTOR/ADMIN)
 	// For STUDENT, will remain approved=false
-	passwordHash, err := bcrypt.GenerateFromPassword(
-		[]byte(req.Password),
-		bcrypt.DefaultCost,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to hash password: %v", err)
-	}
-
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO users (id, nim_nidn, name, email, password_hash, role, approved, approval_status)
 		VALUES ($1, $2, $3, $4, $5, $6, false, 'PENDING')
-	`, userId, req.NimNidn, req.Name, req.Email, string(passwordHash), req.Role)
+	`, userId, req.NimNidn, req.Name, req.Email, req.Password, req.Role)
 	if err != nil {
 		return fmt.Errorf("failed to create user: %v", err)
 	}

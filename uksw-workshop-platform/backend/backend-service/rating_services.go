@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -12,6 +13,10 @@ import (
 func RateWorkshop(ctx context.Context, userId, enrollmentId string, rating int, review string) error {
 	ctx, span := tracer.Start(ctx, "RateWorkshop")
 	defer span.End()
+
+	if rating < 1 || rating > 5 {
+		return errors.New("RATING_MUST_BE_BETWEEN_1_AND_5")
+	}
 
 	// 1. Verify enrollment exists, belongs to user, and fetch workshop date
 	var workshopDateStr sql.NullString
@@ -29,7 +34,7 @@ func RateWorkshop(ctx context.Context, userId, enrollmentId string, rating int, 
 	`, enrollmentId, userId).Scan(&workshopDateStr, &currentStatus)
 
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return errors.New("ENROLLMENT_NOT_FOUND")
 		}
 		return err
@@ -77,7 +82,10 @@ func RateWorkshop(ctx context.Context, userId, enrollmentId string, rating int, 
 		return err
 	}
 
-	rows, _ := result.RowsAffected()
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
 	if rows == 0 {
 		return errors.New("UPDATE_FAILED_NO_ROWS_AFFECTED")
 	}
@@ -120,8 +128,12 @@ func GetStudentEnrollmentHistory(ctx context.Context, userId string) ([]Enrollme
 
 	rows, err := db.QueryContext(ctx, query, userId)
 	if err != nil {
+		log.Printf("[ENROLLMENT DEBUG] GetStudentEnrollmentHistory QUERY FAILED: userId=%s error=%v", userId, err)
+		span.RecordError(err)
 		return nil, err
 	}
+	log.Printf("[ENROLLMENT DEBUG] GetStudentEnrollmentHistory QUERY SUCCESS: userId=%s", userId)
+
 	defer rows.Close()
 
 	var history []Enrollment
@@ -172,6 +184,12 @@ func GetStudentEnrollmentHistory(ctx context.Context, userId string) ([]Enrollme
 		// For history, usually just Date is enough.
 
 		history = append(history, e)
+	}
+
+	if err := rows.Err(); err != nil {
+		log.Printf("[ENROLLMENT DEBUG] GetStudentEnrollmentHistory ROWS FAILED: userId=%s error=%v", userId, err)
+		span.RecordError(err)
+		return nil, err
 	}
 
 	return history, nil
@@ -263,6 +281,12 @@ func GetMentorFeedbackSummary(ctx context.Context, mentorUserID string) (*Mentor
 			Review:      review,
 			RatedAt:     ratedAt,
 		})
+	}
+
+	if err := rows.Err(); err != nil {
+		log.Printf("[FEEDBACK DEBUG] GetMentorFeedbackSummary ROWS FAILED: mentorUserID=%s error=%v", mentorUserID, err)
+		span.RecordError(err)
+		return nil, err
 	}
 
 	// Compute averages
