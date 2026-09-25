@@ -71,15 +71,27 @@ export default function WorkshopSelection() {
                 setTimeLeft(queueStatus.remainingSeconds)
             }
 
-            const [availableRes, myRes] = await Promise.all([
+            const [availableResult, myResult] = await Promise.allSettled([
                 api.getAvailableWorkshops(),
                 api.getMyWorkshops()
             ])
 
-            setWorkshops(availableRes.workshops || availableRes.courses || [])
-            setMyWorkshops(myRes.workshops || myRes.courses || [])
-            setTotalCredits(myRes.totalCredits || 0)
-            setMaxCredits(myRes.maxCredits || 24)
+            if (availableResult.status === 'fulfilled') {
+                const availableRes = availableResult.value
+                setWorkshops(availableRes.workshops || availableRes.courses || [])
+            } else {
+                console.error('Failed to load available workshops:', availableResult.reason)
+                showNotification('Daftar workshop gagal dimuat. Silakan coba lagi.', 'error')
+            }
+
+            if (myResult.status === 'fulfilled') {
+                const myRes = myResult.value
+                setMyWorkshops(myRes.workshops || myRes.courses || [])
+                setTotalCredits(myRes.totalCredits || 0)
+                setMaxCredits(myRes.maxCredits || 24)
+            } else {
+                console.error('Failed to load enrolled workshops:', myResult.reason)
+            }
         } catch (err) {
             console.error('Failed to load workshops:', err)
         } finally {

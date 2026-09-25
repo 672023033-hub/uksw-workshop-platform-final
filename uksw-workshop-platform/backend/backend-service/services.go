@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -22,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -118,30 +118,27 @@ type SeatReservation struct {
 // Kafka configuration helpers. Local development can keep PLAINTEXT Kafka,
 // while Aiven uses TLS + SASL/SCRAM without changing the queue business logic.
 func kafkaTLSConfig() (*tls.Config, error) {
-	caPEM := strings.TrimSpace(os.Getenv("KAFKA_CA_CERT"))
-	caFile := strings.TrimSpace(os.Getenv("KAFKA_CA_FILE"))
+	caFile := os.Getenv("KAFKA_CA_FILE")
+	if caFile == "" {
+		return &tls.Config{MinVersion: tls.VersionTLS12}, nil
+	}
 
-	if caPEM == "" && caFile != "" {
-		data, err := os.ReadFile(caFile)
-		if err != nil {
-			return nil, fmt.Errorf("read Kafka CA certificate: %w", err)
-		}
-		caPEM = string(data)
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read Kafka CA certificate: %w", err)
 	}
 
 	pool, err := x509.SystemCertPool()
 	if err != nil || pool == nil {
 		pool = x509.NewCertPool()
 	}
-
-	if caPEM != "" && !pool.AppendCertsFromPEM([]byte(caPEM)) {
+	if !pool.AppendCertsFromPEM(caPEM) {
 		return nil, fmt.Errorf("failed to append Kafka CA certificate")
 	}
 
 	return &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		RootCAs:    pool,
-		ServerName: strings.Split(os.Getenv("KAFKA_BROKERS"), ":")[0],
 	}, nil
 }
 
@@ -160,17 +157,21 @@ func kafkaSASLMechanism() (sasl.Mechanism, error) {
 		)
 	}
 
+	var algo scram.Algorithm
+
 	switch mechanism {
 	case "SCRAM-SHA-256":
-		return scram.Mechanism(scram.SHA256, username, password)
+		algo = scram.SHA256
 	case "SCRAM-SHA-512":
-		return scram.Mechanism(scram.SHA512, username, password)
+		algo = scram.SHA512
 	default:
 		return nil, fmt.Errorf(
 			"unsupported KAFKA_SASL_MECHANISM %q; use SCRAM-SHA-256 or SCRAM-SHA-512",
 			mechanism,
 		)
 	}
+
+	return scram.Mechanism(algo, username, password)
 }
 
 func getKafkaDialer() *kafka.Dialer {
@@ -240,85 +241,22 @@ func init() {
 	// _, _ = db.Exec(`DROP FUNCTION IF EXISTS generate_seats_for_session(UUID)`)
 	log.Println("Database connection established.")
 
-	// Connect to Redis. Railway/Upstash commonly uses TLS (rediss://).
-	// Keep plain Redis support for local Docker deployments.
-	redisAddr := strings.TrimSpace(os.Getenv("REDIS_ADDR"))
+	// Connect to Redis
+	redisAddr := os.Getenv("REDIS_ADDR")
 	redisPass := os.Getenv("REDIS_PASSWORD")
-	redisDB := 0
-	redisTLS := strings.EqualFold(strings.TrimSpace(os.Getenv("REDIS_TLS")), "true")
 
-	// Also support REDIS_URL when a provider supplies a full redis/rediss URL.
-	redisURL := strings.TrimSpace(os.Getenv("REDIS_URL"))
-	if redisURL != "" {
-		u, parseErr := url.Parse(redisURL)
-		if parseErr != nil {
-			panic("Invalid REDIS_URL: " + parseErr.Error())
-		}
-		if u.Host != "" {
-			redisAddr = u.Host
-		}
-		if u.User != nil {
-			if username := u.User.Username(); username != "" && redisPass == "" {
-				log.Printf("Redis URL contains username %q", username)
-			}
-			if password, ok := u.User.Password(); ok {
-				redisPass = password
-			}
-		}
-		if u.Scheme == "rediss" {
-			redisTLS = true
-		}
-		if u.Query().Get("db") != "" {
-			if _, scanErr := fmt.Sscanf(u.Query().Get("db"), "%d", &redisDB); scanErr != nil {
-				log.Printf("Invalid Redis db value %q; using DB 0", u.Query().Get("db"))
-				redisDB = 0
-			}
-		}
-	}
-
-	// REDIS_ADDR may itself be a rediss:// URL.
-	if strings.HasPrefix(strings.ToLower(redisAddr), "rediss://") || strings.HasPrefix(strings.ToLower(redisAddr), "redis://") {
-		u, parseErr := url.Parse(redisAddr)
-		if parseErr != nil {
-			panic("Invalid REDIS_ADDR: " + parseErr.Error())
-		}
-		if u.Host != "" {
-			redisAddr = u.Host
-		}
-		if u.User != nil {
-			if password, ok := u.User.Password(); ok && redisPass == "" {
-				redisPass = password
-			}
-		}
-		if u.Scheme == "rediss" {
-			redisTLS = true
-		}
-	}
-
-	if redisAddr == "" {
-		panic("REDIS_ADDR or REDIS_URL is required")
-	}
-
-	redisOptions := &redis.Options{
-		Addr:     redisAddr,
-		Password: redisPass,
-		DB:       redisDB,
-	}
-	if redisTLS {
-		redisOptions.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-		log.Printf("Redis TLS enabled: %s", redisAddr)
-	} else {
-		log.Printf("Redis TLS disabled: %s", redisAddr)
-	}
-
-	redisClient = redis.NewClient(redisOptions)
+	redisClient = redis.NewClient(&redis.Options{
+		Addr:      redisAddr,
+		Password:  redisPass,
+		DB:        0,
+		TLSConfig: &tls.Config{},
+	})
 
 	// Test Redis connection
 	_, err = redisClient.Ping(ctx).Result()
 	if err != nil {
 		panic("Failed to connect to Redis: " + err.Error())
 	}
-	log.Println("Redis connection established.")
 
 	// Initialize Kafka writer
 	kafkaBrokers := os.Getenv("KAFKA_BROKERS") // kode program 6 : Baris 01–41
@@ -390,6 +328,7 @@ func startSlotCleanupWorker() {
 
 // Authentication Service Functions
 func AuthenticateUser(ctx context.Context, username, password, role string) (*User, string, error) {
+	log.Printf("[LOGIN DEBUG] AuthenticateUser dipanggil: username=%s role=%s", username, role)
 	ctx, span := tracer.Start(ctx, "AuthenticateUser")
 	defer span.End()
 	span.SetAttributes(
@@ -433,8 +372,11 @@ func AuthenticateUser(ctx context.Context, username, password, role string) (*Us
 		return nil, "", errors.New("INVALID_CREDENTIALS")
 	}
 
-	// Verify password (plaintext comparison for development)
-	if user.PasswordHash != password {
+	// Verify password using bcrypt
+	if err := bcrypt.CompareHashAndPassword(
+		[]byte(user.PasswordHash),
+		[]byte(password),
+	); err != nil {
 		log.Printf("[AUTH FAILED] Password mismatch for user=%s", username)
 		return nil, "", errors.New("INVALID_CREDENTIALS")
 	}
@@ -1012,11 +954,7 @@ func GetAvailableWorkshops(ctx context.Context, semester, faculty, page, limit s
         LEFT JOIN schedules sch ON cl.id = sch.class_id
 		WHERE s.code = $1
 		AND ($2 = '' OR c.faculty = $2)
-        GROUP BY
-            c.id, cl.id, c.code, c.name, c.credits, c.faculty,
-            cl.quota, u.name, c.workshop_type, cl.seats_enabled,
-            cl.month, cl.year, cl.status, cl.date,
-            cl.registration_start, cl.registration_end, c.preview_image
+        GROUP BY c.id, cl.id, u.name, c.workshop_type, cl.seats_enabled
 		LIMIT 20
 	`
 
@@ -1055,7 +993,6 @@ func GetAvailableWorkshops(ctx context.Context, semester, faculty, page, limit s
 			&workshop.PreviewImage,
 		)
 		if err != nil {
-			log.Printf("[WORKSHOP DEBUG] GetAvailableWorkshops scan error: %v", err)
 			continue
 		}
 
@@ -1069,11 +1006,6 @@ func GetAvailableWorkshops(ctx context.Context, semester, faculty, page, limit s
 		workshop.Date = "" // Clear to avoid duplicate in JSON
 
 		workshops = append(workshops, workshop)
-	}
-
-	if err := rows.Err(); err != nil {
-		log.Printf("[WORKSHOP DEBUG] GetAvailableWorkshops rows error: %v", err)
-		return nil, nil, err
 	}
 
 	pagination := map[string]interface{}{
@@ -1461,25 +1393,14 @@ func formatTimeHHMM(t string) string {
 }
 
 func GetStudentWorkshops(ctx context.Context, userId string) ([]Enrollment, error) {
-	ctx, span := tracer.Start(ctx, "GetStudentWorkshops")
+	ctx, span := tracer.Start(ctx, "GetStudentCourses")
 	defer span.End()
 	span.SetAttributes(attribute.String("user.id", userId))
-
 	log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops START: userId=%s", userId)
 
 	query := `
-		SELECT
-			e.id,
-			c.code,
-			c.name,
-			cl.class_code,
-			c.credits,
-			to_char(e.enrolled_at, 'YYYY-MM-DD HH24:MI:SS'),
-			u.name as mentor_name,
-			cl.id as class_id,
-			to_char(cl.date, 'YYYY-MM-DD'),
-			COALESCE(st.seat_number, ''),
-			COALESCE(st.id::text, '')
+		SELECT e.id, c.code, c.name, cl.class_code, c.credits, e.enrolled_at, u.name as mentor_name, cl.id as class_id,
+		       COALESCE(st.seat_number, '') as seat_number, COALESCE(st.id::text, '') as seat_id
 		FROM enrollments e
 		JOIN students s ON e.student_id = s.id
 		JOIN workshop_sessions cl ON e.class_id = cl.id
@@ -1495,7 +1416,6 @@ func GetStudentWorkshops(ctx context.Context, userId string) ([]Enrollment, erro
 
 	rows, err := db.QueryContext(ctx, query, userId)
 	if err != nil {
-		log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops QUERY FAILED: userId=%s error=%v", userId, err)
 		span.RecordError(err)
 		return nil, err
 	}
@@ -1504,8 +1424,6 @@ func GetStudentWorkshops(ctx context.Context, userId string) ([]Enrollment, erro
 	var enrollments []Enrollment
 	for rows.Next() {
 		var enrollment Enrollment
-		var dateStr sql.NullString
-
 		err := rows.Scan(
 			&enrollment.ID,
 			&enrollment.WorkshopCode,
@@ -1515,90 +1433,92 @@ func GetStudentWorkshops(ctx context.Context, userId string) ([]Enrollment, erro
 			&enrollment.EnrolledAt,
 			&enrollment.Mentor,
 			&enrollment.SessionID,
-			&dateStr,
 			&enrollment.SeatNumber,
 			&enrollment.SeatID,
 		)
 		if err != nil {
-			log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops SCAN FAILED: userId=%s error=%v", userId, err)
-			span.RecordError(err)
-			return nil, err
+			continue
 		}
 
-		if dateStr.Valid {
-			enrollment.Date = dateStr.String
-		}
-
+		// Fetch schedules for this class
 		schedRows, err := db.QueryContext(ctx, `
 			SELECT day_of_week, start_time::text, end_time::text, room
 			FROM schedules
 			WHERE class_id = $1
 			ORDER BY start_time
 		`, enrollment.SessionID)
-		if err != nil {
-			log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops SCHEDULE QUERY FAILED: userId=%s sessionId=%s error=%v", userId, enrollment.SessionID, err)
-			enrollment.Schedule = []Schedule{}
-		} else {
+
+		if err == nil {
 			var schedules []Schedule
 			var schedStr string
 
 			for schedRows.Next() {
-				var schedule Schedule
+				var s Schedule
 				var start, end string
-				if err := schedRows.Scan(&schedule.DayOfWeek, &start, &end, &schedule.Room); err != nil {
-					schedRows.Close()
-					log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops SCHEDULE SCAN FAILED: userId=%s sessionId=%s error=%v", userId, enrollment.SessionID, err)
-					return nil, err
-				}
+				schedRows.Scan(&s.DayOfWeek, &start, &end, &s.Room)
 
-				schedule.StartTime = formatTimeHHMM(start)
-				schedule.EndTime = formatTimeHHMM(end)
-				schedules = append(schedules, schedule)
+				// Format times - extract HH:MM
+				s.StartTime = formatTimeHHMM(start)
+				s.EndTime = formatTimeHHMM(end)
 
-				var dateLabel string
-				if enrollment.Date != "" {
-					if parsedDate, parseErr := time.Parse("2006-01-02", enrollment.Date); parseErr == nil {
-						dateLabel = fmt.Sprintf("%s %02d-%02d-%04d",
-							strings.ToUpper(parsedDate.Format("Mon")), parsedDate.Day(), parsedDate.Month(), parsedDate.Year())
-					}
-				}
-				if dateLabel == "" {
-					dateLabel = strings.ToUpper(schedule.DayOfWeek)
-				}
+				schedules = append(schedules, s)
+
+				// Build string representation: "MON 13 02 2026 08:00-10:00"
+				// We need the date from the enrollment
 				if schedStr != "" {
 					schedStr += ", "
 				}
-				schedStr += fmt.Sprintf("%s %s-%s", dateLabel, schedule.StartTime, schedule.EndTime)
-			}
 
-			if err := schedRows.Err(); err != nil {
-				schedRows.Close()
-				log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops SCHEDULE ROWS FAILED: userId=%s sessionId=%s error=%v", userId, enrollment.SessionID, err)
-				return nil, err
+				// Parse date to format it as DD-MM-YYYY
+				var dateStr string
+				if enrollment.Date != "" {
+					parsedDate, _ := time.Parse("2006-01-02", enrollment.Date)
+					// Format: MON 13-02-2026
+					// Mon = Jan 2, 06 = 2006
+					dayName := strings.ToUpper(parsedDate.Format("Mon"))
+					dayStr := fmt.Sprintf("%02d", parsedDate.Day())
+					monthStr := fmt.Sprintf("%02d", parsedDate.Month())
+					yearStr := fmt.Sprintf("%d", parsedDate.Year())
+					dateStr = fmt.Sprintf("%s %s-%s-%s", dayName, dayStr, monthStr, yearStr)
+				} else {
+					// Fallback if no date (shouldn't happen with valid data)
+					if len(s.DayOfWeek) >= 3 {
+						dateStr = strings.ToUpper(s.DayOfWeek[:3])
+					} else {
+						dateStr = strings.ToUpper(s.DayOfWeek)
+					}
+				}
+
+				schedStr += fmt.Sprintf("%s %s-%s", dateStr, s.StartTime, s.EndTime)
 			}
 			schedRows.Close()
 			enrollment.Schedule = schedules
 			enrollment.ScheduleStr = schedStr
+		} else {
+			enrollment.Schedule = []Schedule{}
 		}
 
+		// Use date as schedule if schedule string is empty
 		if enrollment.ScheduleStr == "" && enrollment.Date != "" {
-			if parsedDate, parseErr := time.Parse("2006-01-02", enrollment.Date); parseErr == nil {
-				enrollment.ScheduleStr = fmt.Sprintf("%s %02d-%02d-%04d",
-					strings.ToUpper(parsedDate.Format("Mon")), parsedDate.Day(), parsedDate.Month(), parsedDate.Year())
-			}
+			// Format date only if no schedule
+			parsedDate, _ := time.Parse("2006-01-02", enrollment.Date)
+			dayName := strings.ToUpper(parsedDate.Format("Mon"))
+			dayStr := fmt.Sprintf("%02d", parsedDate.Day())
+			monthStr := fmt.Sprintf("%02d", parsedDate.Month())
+			yearStr := fmt.Sprintf("%d", parsedDate.Year())
+			enrollment.ScheduleStr = fmt.Sprintf("%s %s-%s-%s", dayName, dayStr, monthStr, yearStr)
 		}
 
+		// If date is already in schedule, we don't need to append it again like the old code
+		// enrollment.Date = "" // Keep it for frontend reference if needed, or clear it. Old code cleared it.
+		// Let's keep consistent with valid JSON response
+
+		// Calculate Tuition (250,000 per credit)
 		enrollment.Tuition = float64(enrollment.Credits) * 250000.0
+
 		enrollments = append(enrollments, enrollment)
 	}
 
-	if err := rows.Err(); err != nil {
-		log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops ROWS FAILED: userId=%s error=%v", userId, err)
-		span.RecordError(err)
-		return nil, err
-	}
-
-	log.Printf("[ENROLLMENT DEBUG] GetStudentWorkshops SUCCESS: userId=%s count=%d", userId, len(enrollments))
 	return enrollments, nil
 }
 
@@ -1710,9 +1630,17 @@ type RegisterRequest struct {
 
 // CreateWorkshop creates a new workshop and its first session/schedule.
 // Returns the new sessionId so callers can perform follow-up operations (e.g. image upload).
-func CreateWorkshop(ctx context.Context, userId string, req CreateClassRequest) (string, error) {
+func CreateWorkshop(ctx context.Context, userId string, req CreateClassRequest) (sessionID string, err error) {
 	ctx, span := tracer.Start(ctx, "CreateWorkshop")
 	defer span.End()
+	defer func() {
+		if err != nil {
+			log.Printf("[WORKSHOP DEBUG] CreateWorkshop FAILED: userId=%s error=%v", userId, err)
+		} else {
+			log.Printf("[WORKSHOP DEBUG] CreateWorkshop SUCCESS: userId=%s sessionId=%s", userId, sessionID)
+		}
+	}()
+	log.Printf("[WORKSHOP DEBUG] CreateWorkshop START: userId=%s name=%s type=%s month=%d year=%d quota=%d", userId, req.Name, req.WorkshopType, req.Month, req.Year, req.Quota)
 
 	// Backdate validation: reject if month/year is in the past
 	now := time.Now()
@@ -2285,15 +2213,23 @@ func RegisterUser(ctx context.Context, req RegisterRequest) error {
 
 	// Insert user (trigger will auto-approve if MENTOR/ADMIN)
 	// For STUDENT, will remain approved=false
+	passwordHash, err := bcrypt.GenerateFromPassword(
+		[]byte(req.Password),
+		bcrypt.DefaultCost,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to hash password: %v", err)
+	}
+
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO users (id, nim_nidn, name, email, password_hash, role, approved, approval_status)
 		VALUES ($1, $2, $3, $4, $5, $6, false, 'PENDING')
-	`, userId, req.NimNidn, req.Name, req.Email, req.Password, req.Role)
+	`, userId, req.NimNidn, req.Name, req.Email, string(passwordHash), req.Role)
 	if err != nil {
 		return fmt.Errorf("failed to create user: %v", err)
 	}
 
-	// If student, create student record
+	// Create the role-specific profile record.
 	if req.Role == "STUDENT" {
 		studentId := uuid.New().String()
 		_, err = tx.ExecContext(ctx, `
@@ -2302,6 +2238,20 @@ func RegisterUser(ctx context.Context, req RegisterRequest) error {
 		`, studentId, userId, req.Major)
 		if err != nil {
 			return fmt.Errorf("failed to create student record: %v", err)
+		}
+	} else if req.Role == "MENTOR" {
+		// Mentor accounts also need a row in mentors because mentor-only
+		// operations (for example CreateWorkshop) resolve the mentor_id
+		// through mentors.user_id.
+		mentorId := uuid.New().String()
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO mentors (
+				id, user_id, department, title, max_concurrent_students, created_at
+			)
+			VALUES ($1, $2, 'FTI', 'Mentor', 30, NOW())
+		`, mentorId, userId)
+		if err != nil {
+			return fmt.Errorf("failed to create mentor record: %v", err)
 		}
 	}
 
